@@ -120,7 +120,7 @@ def check_tokens() -> bool:
 def main():
     """The main logic of the bot."""
     if not check_tokens():
-        logger.critical(f'Отсутствует обязательная переменная окружения.')
+        logger.critical('Отсутствует обязательная переменная окружения.')
         sys.exit('Программа принудительно остановлена.')
 
     bot = telegram.Bot(token=TELEGRAM_TOKEN)
