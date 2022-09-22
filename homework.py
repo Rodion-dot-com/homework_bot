@@ -1,5 +1,6 @@
 import logging
 import os
+import sys
 import time
 from http import HTTPStatus
 from logging import StreamHandler
@@ -20,7 +21,6 @@ RETRY_TIME = 600
 ENDPOINT = 'https://practicum.yandex.ru/api/user_api/homework_statuses/'
 HEADERS = {'Authorization': f'OAuth {PRACTICUM_TOKEN}'}
 
-
 HOMEWORK_STATUSES = {
     'approved': 'Работа проверена: ревьюеру всё понравилось. Ура!',
     'reviewing': 'Работа взята на проверку ревьюером.',
@@ -39,6 +39,7 @@ logger.addHandler(handler)
 
 def send_message(bot, message):
     """Sends a message to the TELEGRAM_CHAT_ID."""
+    logger.info('Попытка отправить сообщение в Telegram.')
     try:
         bot.send_message(TELEGRAM_CHAT_ID, message)
     except Exception as error:
@@ -54,7 +55,13 @@ def get_api_answer(current_timestamp: int) -> dict:
     """
     timestamp = current_timestamp or int(time.time())
     params = {'from_date': timestamp}
-    response = requests.get(ENDPOINT, headers=HEADERS, params=params)
+    logger.info('Отправка запроса к API.')
+    try:
+        response = requests.get(ENDPOINT, headers=HEADERS, params=params)
+    except Exception:
+        raise exceptions.EndpointIsUnavailable(
+            'An error was received during the endpoint request')
+
     if response.status_code != HTTPStatus.OK:
         raise exceptions.EndpointIsUnavailable(
             'The API returned a code other than 200')
@@ -69,13 +76,13 @@ def check_response(response: dict) -> list:
     if not isinstance(response, dict):
         raise TypeError('The API response must be a dictionary')
 
-    homeworks = response.get('homeworks')
-    if not response.get('current_date'):
+    if 'current_date' not in response or 'homeworks' not in response:
         raise exceptions.APIResponseIsIncorrect(
             'The API response must contain the `homeworks` '
             'and `current_date` keys'
         )
 
+    homeworks = response.get('homeworks')
     if not isinstance(homeworks, list):
         raise TypeError(
             'In the response, the `homeworks` key must match the list')
@@ -87,7 +94,7 @@ def parse_status(homework: dict) -> str:
     homework_name = homework.get('homework_name')
     homework_status = homework.get('status')
 
-    if not homework_name or not homework_status:
+    if 'homework_name' not in homework or 'status' not in homework:
         raise KeyError(
             'Each `homework` must contain the keys `homework_name` and '
             '`status`'
@@ -100,32 +107,21 @@ def parse_status(homework: dict) -> str:
             f'Possible statuses: {possible_statuses}'
         )
 
-    verdict = HOMEWORK_STATUSES.get(homework_status)
+    verdict = HOMEWORK_STATUSES[homework_status]
 
     return f'Изменился статус проверки работы "{homework_name}". {verdict}'
 
 
 def check_tokens() -> bool:
     """Checks the availability of environment variables."""
-    env_vars = {
-        'PRACTICUM_TOKEN': PRACTICUM_TOKEN,
-        'TELEGRAM_TOKEN': TELEGRAM_TOKEN,
-        'TELEGRAM_CHAT_ID': TELEGRAM_CHAT_ID
-    }
-    for var_name, variable in env_vars.items():
-        if not variable:
-            logger.critical(
-                f'Отсутствует обязательная переменная окружения: {var_name}. '
-                f'Программа принудительно остановлена.'
-            )
-            return False
-    return True
+    return all((PRACTICUM_TOKEN, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID))
 
 
 def main():
     """The main logic of the bot."""
     if not check_tokens():
-        return
+        logger.critical(f'Отсутствует обязательная переменная окружения.')
+        sys.exit('Программа принудительно остановлена.')
 
     bot = telegram.Bot(token=TELEGRAM_TOKEN)
     current_timestamp = int(time.time())
@@ -136,15 +132,12 @@ def main():
             response = get_api_answer(current_timestamp)
             homeworks = check_response(response)
 
-            if not homeworks:
-                logger.debug('В ответе отсутствуют новые статусы.')
-
-            for homework in homeworks:
-                new_msg = parse_status(homework)
+            if homeworks:
+                new_msg = parse_status(homeworks[0])
                 send_message(bot, new_msg)
-
+            else:
+                logger.debug('В ответе отсутствуют новые статусы.')
             current_timestamp = response.get('current_date')
-            time.sleep(RETRY_TIME)
 
         except Exception as error:
             message = f'Сбой в работе программы: {error}'
@@ -152,6 +145,8 @@ def main():
             if last_msg != message:
                 send_message(bot, message)
                 last_msg = message
+
+        finally:
             time.sleep(RETRY_TIME)
 
 
